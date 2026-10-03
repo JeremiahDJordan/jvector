@@ -21,10 +21,14 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class TransposedPQProviderTest {
     @Test
-    public void onlyNeonAndMeasuredShapesOptIn() {
+    public void onlyMeasuredIsasAndShapesOptIn() {
         var provider = new NativeVectorizationProvider();
         var support = (NativeVectorUtilSupport) provider.getVectorUtilSupport();
-        assertEquals("neon".equals(support.getActiveIsa()), support.supportsTransposedPQ(new int[][] {{1,0}, {8,1}},256));
+        String isa = support.getActiveIsa();
+        boolean eligibleIsa = "neon".equals(isa) || "avx2".equals(isa);
+        for (int width = 1; width <= 8; width++)
+            assertEquals(eligibleIsa, support.supportsTransposedPQ(new int[][] {{width,0}},256));
+        assertEquals(eligibleIsa, support.supportsTransposedPQ(new int[][] {{1,0}, {8,1}},256));
         assertFalse(support.supportsTransposedPQ(new int[][] {{9,0}},256));
         assertFalse(support.supportsTransposedPQ(new int[][] {{0,0}},256));
         assertFalse(support.supportsTransposedPQ(new int[][] {{1,0}},17));

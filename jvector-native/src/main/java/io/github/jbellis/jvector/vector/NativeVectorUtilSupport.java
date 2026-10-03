@@ -43,8 +43,11 @@ class NativeVectorUtilSupport extends PanamaVectorUtilSupport
 
     @Override
     public boolean supportsTransposedPQ(int[][] subspaces, int clusters) {
-        // Enable only the measured NEON shape; other ISAs retain their bulk kernels.
-        if (!"neon".equals(getActiveIsa()) || clusters != 256 || subspaces.length == 0)
+        // Enable the measured NEON and AVX2 shapes; other ISAs retain their bulk kernels.
+        if (clusters != 256 || subspaces.length == 0)
+            return false;
+        String isa = getActiveIsa();
+        if (!"neon".equals(isa) && !"avx2".equals(isa))
             return false;
         for (int[] subspace : subspaces)
             if (subspace.length != 2 || subspace[0] < 1 || subspace[0] > 8)
