@@ -2341,6 +2341,69 @@ public class NativeSimdOps {
         }
     }
 
+    private static class calculate_transposed_pq_dot_f32 {
+        public static final FunctionDescriptor DESC = FunctionDescriptor.ofVoid(
+            NativeSimdOps.C_POINTER,
+            NativeSimdOps.C_POINTER,
+            NativeSimdOps.C_POINTER,
+            NativeSimdOps.C_INT,
+            NativeSimdOps.C_INT,
+            NativeSimdOps.C_POINTER,
+            NativeSimdOps.C_POINTER
+        );
+
+        public static final MemorySegment ADDR = NativeSimdOps.findOrThrow("calculate_transposed_pq_dot_f32");
+
+        public static final MethodHandle HANDLE = Linker.nativeLinker().downcallHandle(ADDR, DESC, Linker.Option.critical(true));
+    }
+
+    /**
+     * Function descriptor for:
+     * {@snippet lang=c :
+     * void calculate_transposed_pq_dot_f32(const float *coordinates, const int32_t *widths, const int32_t *offsets, int32_t subspaces, int32_t clusters, const float *query, float *output)
+     * }
+     */
+    public static FunctionDescriptor calculate_transposed_pq_dot_f32$descriptor() {
+        return calculate_transposed_pq_dot_f32.DESC;
+    }
+
+    /**
+     * Downcall method handle for:
+     * {@snippet lang=c :
+     * void calculate_transposed_pq_dot_f32(const float *coordinates, const int32_t *widths, const int32_t *offsets, int32_t subspaces, int32_t clusters, const float *query, float *output)
+     * }
+     */
+    public static MethodHandle calculate_transposed_pq_dot_f32$handle() {
+        return calculate_transposed_pq_dot_f32.HANDLE;
+    }
+
+    /**
+     * Address for:
+     * {@snippet lang=c :
+     * void calculate_transposed_pq_dot_f32(const float *coordinates, const int32_t *widths, const int32_t *offsets, int32_t subspaces, int32_t clusters, const float *query, float *output)
+     * }
+     */
+    public static MemorySegment calculate_transposed_pq_dot_f32$address() {
+        return calculate_transposed_pq_dot_f32.ADDR;
+    }
+
+    /**
+     * {@snippet lang=c :
+     * void calculate_transposed_pq_dot_f32(const float *coordinates, const int32_t *widths, const int32_t *offsets, int32_t subspaces, int32_t clusters, const float *query, float *output)
+     * }
+     */
+    public static void calculate_transposed_pq_dot_f32(MemorySegment coordinates, MemorySegment widths, MemorySegment offsets, int subspaces, int clusters, MemorySegment query, MemorySegment output) {
+        var mh$ = calculate_transposed_pq_dot_f32.HANDLE;
+        try {
+            if (TRACE_DOWNCALLS) {
+                traceDowncall("calculate_transposed_pq_dot_f32", coordinates, widths, offsets, subspaces, clusters, query, output);
+            }
+            mh$.invokeExact(coordinates, widths, offsets, subspaces, clusters, query, output);
+        } catch (Throwable ex$) {
+           throw new AssertionError("should not reach here", ex$);
+        }
+    }
+
     private static class calculate_partial_sums_dot_f32 {
         public static final FunctionDescriptor DESC = FunctionDescriptor.ofVoid(
             NativeSimdOps.C_POINTER,

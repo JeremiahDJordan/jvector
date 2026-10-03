@@ -100,7 +100,17 @@ require_cmd ninja  "sudo apt-get install -y ninja-build"
 # ---------------------------------------------------------------------------
 # Detect the host CPU architecture.
 # ---------------------------------------------------------------------------
-HOST_ARCH="$(uname -m)"   # e.g. x86_64 or aarch64
+HOST_OS="$(uname -s)"
+HOST_ARCH="$(uname -m)"
+if [ "${HOST_ARCH}" == "arm64" ]; then HOST_ARCH="aarch64"; fi
+LIB_EXT="so"
+if [ "${HOST_OS}" == "Darwin" ]; then
+  LIB_EXT="dylib"
+  if [ "${CROSSARCH}" == "true" ]; then
+    echo "ERROR: native.crossarch is supported only on Linux; macOS builds the host architecture."
+    exit 1
+  fi
+fi
 printf "HOST_ARCH=%s\n" "${HOST_ARCH}"
 
 # ---------------------------------------------------------------------------
@@ -112,20 +122,24 @@ printf "HOST_ARCH=%s\n" "${HOST_ARCH}"
 build_native() {
   local ARCH="$1"
   local BUILD_DIR="${MODULE_ROOT}/target/meson-build-${ARCH}"
-  local OUT_SO="${RESOURCES_DIR}/libjvector-${ARCH}.so"
+  local OUT_SO="${RESOURCES_DIR}/libjvector-${ARCH}.${LIB_EXT}"
 
   rm -rf "${OUT_SO}"
 
   if [ "${ARCH}" == "${HOST_ARCH}" ]; then
     # ---- Native build ------------------------------------------------------
-    # meson compiles with $CXX when it is set, so check that compiler
-    CXX_CMD="${CXX:-g++}"
-    require_cmd "${CXX_CMD}" "sudo apt-get install -y g++"
+    if [ "${HOST_OS}" == "Darwin" ]; then
+      require_cmd "${CXX:-clang++}" "Install the Xcode command line tools: xcode-select --install"
+    else
+      # meson compiles with $CXX when it is set, so check that compiler
+      CXX_CMD="${CXX:-g++}"
+      require_cmd "${CXX_CMD}" "sudo apt-get install -y g++"
 
-    CURRENT_GPP_VERSION=$(${CXX_CMD} -dumpfullversion -dumpversion)
-    if [ "$(printf '%s\n' "$MIN_GCC_VERSION" "$CURRENT_GPP_VERSION" | sort -V | head -n1)" != "$MIN_GCC_VERSION" ]; then
-      echo "ERROR: ${CXX_CMD} version $CURRENT_GPP_VERSION is too old. Please upgrade to g++ $MIN_GCC_VERSION or newer, or set CXX to one."
-      exit 1
+      CURRENT_GPP_VERSION=$(${CXX_CMD} -dumpfullversion -dumpversion)
+      if [ "$(printf '%s\n' "$MIN_GCC_VERSION" "$CURRENT_GPP_VERSION" | sort -V | head -n1)" != "$MIN_GCC_VERSION" ]; then
+        echo "ERROR: ${CXX_CMD} version $CURRENT_GPP_VERSION is too old. Please upgrade to g++ $MIN_GCC_VERSION or newer, or set CXX to one."
+        exit 1
+      fi
     fi
 
     meson setup "${BUILD_DIR}" "${NATIVE_DIR}" \
@@ -157,9 +171,13 @@ build_native() {
   meson compile -C "${BUILD_DIR}"
 
   # The versioned .so (e.g. libjvector.so.0.1.0) is the real file; symlinks point to it.
-  SOFILE=$(find "${BUILD_DIR}" -maxdepth 1 -name 'libjvector.so.*' -type f | head -1)
+  if [ "${HOST_OS}" == "Darwin" ]; then
+    SOFILE=$(find "${BUILD_DIR}" -maxdepth 1 -name 'libjvector*.dylib' -type f | head -1)
+  else
+    SOFILE=$(find "${BUILD_DIR}" -maxdepth 1 -name 'libjvector.so.*' -type f | head -1)
+  fi
   if [ -z "${SOFILE}" ]; then
-    echo "ERROR: libjvector.so not found in ${BUILD_DIR} after ${ARCH} build."
+    echo "ERROR: libjvector native library not found in ${BUILD_DIR} after ${ARCH} build."
     exit 1
   fi
   cp "${SOFILE}" "${OUT_SO}"

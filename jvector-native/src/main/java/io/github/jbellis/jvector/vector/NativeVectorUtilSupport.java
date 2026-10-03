@@ -41,10 +41,29 @@ class NativeVectorUtilSupport extends PanamaVectorUtilSupport
                 ? new NativeVectorUtilSupport128() : new NativeVectorUtilSupport();
     }
 
+    @Override
+    public boolean supportsTransposedPQ(int[][] subspaces, int clusters) {
+        // Enable only the measured NEON shape; other ISAs retain their bulk kernels.
+        if (!"neon".equals(getActiveIsa()) || clusters != 256 || subspaces.length == 0)
+            return false;
+        for (int[] subspace : subspaces)
+            if (subspace.length != 2 || subspace[0] < 1 || subspace[0] > 8)
+                return false;
+        return true;
+    }
+
+    @Override
+    public void calculateTransposedPQDotProducts(VectorFloat<?> coordinates, int[] widths, int[] offsets,
+                                                int clusters, VectorFloat<?> query, VectorFloat<?> output) {
+        NativeSimdOps.calculate_transposed_pq_dot_f32(
+                ((MemorySegmentVectorFloat) coordinates).get(), MemorySegment.ofArray(widths), MemorySegment.ofArray(offsets), widths.length, clusters,
+                ((MemorySegmentVectorFloat) query).get(), ((MemorySegmentVectorFloat) output).get());
+    }
+
     /**
      * Returns the ISA tier that was selected by the native dispatcher at library
      * initialisation time.  Possible values: {@code "avx3_spr"}, {@code "avx3_dl"},
-     * {@code "avx3"}, {@code "avx2"}, {@code "sse42"}.
+     * {@code "avx3"}, {@code "avx2"}, {@code "sse42"}, {@code "neon"}, {@code "sve"}, {@code "sve2"}.
      */
     public String getActiveIsa() {
         return NativeSimdOps.jvector_simd_get_active_isa()

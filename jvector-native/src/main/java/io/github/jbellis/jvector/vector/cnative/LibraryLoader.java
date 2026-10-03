@@ -23,12 +23,13 @@ import java.nio.file.Files;
  * This class is used to load supporting native libraries. First, it tries to load the library from the system path.
  * If that fails, it tries to load the library from the classpath (using the usual copying to a tmp directory route).
  * <p>
- * Two resource names are bundled in the jar:
+ * Libraries built for the supported platform are bundled in the jar:
  * <ul>
  *   <li>{@code /libjvector-x86_64.so}  — built natively for x86_64</li>
- *   <li>{@code /libjvector-aarch64.so} — cross-compiled for aarch64</li>
+ *   <li>{@code /libjvector-aarch64.so} — built for aarch64 Linux</li>
+ *   <li>{@code /libjvector-x86_64.dylib} and {@code /libjvector-aarch64.dylib} — macOS</li>
  * </ul>
- * At runtime the correct file is chosen based on {@code os.arch}.
+ * At runtime the correct file is chosen based on {@code os.name} and {@code os.arch}.
  */
 public class LibraryLoader {
     private LibraryLoader() {}
@@ -39,11 +40,20 @@ public class LibraryLoader {
      */
     static String resourceNameForArch() {
         String arch = System.getProperty("os.arch", "");
+        String os = System.getProperty("os.name", "");
+        String extension;
+        if (os.startsWith("Mac") || os.startsWith("Darwin")) {
+            extension = ".dylib";
+        } else if (os.startsWith("Linux")) {
+            extension = ".so";
+        } else {
+            return null;
+        }
         if (arch.equals("aarch64") || arch.equals("arm64")) {
-            return "/libjvector-aarch64.so";
+            return "/libjvector-aarch64" + extension;
         }
         if (arch.equals("amd64") || arch.equals("x86_64")) {
-            return "/libjvector-x86_64.so";
+            return "/libjvector-x86_64" + extension;
         }
         return null;
     }

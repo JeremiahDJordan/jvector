@@ -64,9 +64,15 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
     public static final int K_MEANS_ITERATIONS = 6;
     public static final int MAX_PQ_TRAINING_SET_SIZE = 128000;
 
-    final VectorFloat<?>[] codebooks; // array of codebooks, where each codebook is a VectorFloat consisting of k contiguous subvectors each of length M
-    final int M; // codebooks.length, redundantly reproduced for convenience
-    private final int clusterCount; // codebooks[0].length, redundantly reproduced for convenience
+    // Exactly one coordinate representation is retained. Training uses the
+    // original per-codebook layout; eligible search loads use one flat layout.
+    final VectorFloat<?> transposedCodebooks;
+    private final int[] subvectorWidths;
+    private final int[] subvectorOffsets;
+    private final ThreadLocal<VectorFloat<?>[]> centroidScratch;
+    final VectorFloat<?>[] codebooks; // centroid-major coordinates; null for transposed search loads
+    final int M; // number of subspaces
+    private final int clusterCount; // centroids per subspace
     final int originalDimension;
     final VectorFloat<?> globalCentroid;
     final int[][] subvectorSizesAndOffsets;
@@ -204,7 +210,7 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
 
         Callable<VectorFloat<?>[]> callable = () -> IntStream.range(0, M).parallel().mapToObj(m -> {
             VectorFloat<?>[] subvectors = extractSubvectors(vectors, m, subvectorSizesAndOffsets);
-            var clusterer = new KMeansPlusPlusClusterer(subvectors, codebooks[m], anisotropicThreshold);
+            var clusterer = new KMeansPlusPlusClusterer(subvectors, centroidMajorCodebook(m), anisotropicThreshold);
             return clusterer.cluster(anisotropicThreshold == UNWEIGHTED ? lloydsRounds : 0,
                                      anisotropicThreshold == UNWEIGHTED ? 0 : lloydsRounds);
         }).toArray(VectorFloat<?>[]::new);
@@ -214,11 +220,27 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
     }
 
     ProductQuantization(VectorFloat<?>[] codebooks, int clusterCount, int[][] subvectorSizesAndOffsets, VectorFloat<?> globalCentroid, float anisotropicThreshold) {
+        this(codebooks, null, clusterCount, subvectorSizesAndOffsets, globalCentroid, anisotropicThreshold);
+    }
+
+    private ProductQuantization(VectorFloat<?>[] codebooks, VectorFloat<?> transposedCodebooks,
+                                int clusterCount, int[][] subvectorSizesAndOffsets,
+                                VectorFloat<?> globalCentroid, float anisotropicThreshold) {
         checkClusterCount(clusterCount);
+        if ((codebooks == null) == (transposedCodebooks == null)) {
+            throw new IllegalArgumentException("Exactly one codebook representation is required");
+        }
+        this.transposedCodebooks = transposedCodebooks;
+        subvectorWidths = Arrays.stream(subvectorSizesAndOffsets).mapToInt(s -> s[0]).toArray();
+        subvectorOffsets = Arrays.stream(subvectorSizesAndOffsets).mapToInt(s -> s[1]).toArray();
+        int maxWidth = Arrays.stream(subvectorWidths).max().orElseThrow();
+        centroidScratch = transposedCodebooks == null ? null : ThreadLocal.withInitial(() -> new VectorFloat<?>[] {
+            vectorTypeSupport.createFloatVector(maxWidth), vectorTypeSupport.createFloatVector(maxWidth)
+        });
 
         this.codebooks = codebooks;
         this.globalCentroid = globalCentroid;
-        this.M = codebooks.length;
+        this.M = subvectorSizesAndOffsets.length;
         this.clusterCount = clusterCount;
         this.subvectorSizesAndOffsets = subvectorSizesAndOffsets;
         this.originalDimension = Arrays.stream(subvectorSizesAndOffsets).mapToInt(m -> m[0]).sum();
@@ -234,9 +256,7 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
         centroidNormsSquared = new float[M][clusterCount];
         for (int i = 0; i < M; i++) {
             for (int j = 0; j < clusterCount; j++) {
-                centroidNormsSquared[i][j] = dotProduct(codebooks[i], j * subvectorSizesAndOffsets[i][0],
-                                                        codebooks[i], j * subvectorSizesAndOffsets[i][0],
-                                                        subvectorSizesAndOffsets[i][0]);
+                centroidNormsSquared[i][j] = centroidDot(i, j, j);
             }
         }
     }
@@ -375,16 +395,16 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
      * @return the parallel-cost residuals for each subspace and cluster
      */
     private Residual[][] computeResiduals(VectorFloat<?> vector) {
-        Residual[][] residuals = new Residual[codebooks.length][];
+        Residual[][] residuals = new Residual[M][];
 
         float inverseNorm = (float) (1.0 / sqrt(dotProduct(vector, vector)));
-        for (int i = 0; i < codebooks.length; i++) {
+        for (int i = 0; i < M; i++) {
             var x = getSubVector(vector, i, subvectorSizesAndOffsets);
             float xNormSquared = dotProduct(x, x);
             residuals[i] = new Residual[clusterCount];
 
             for (int j = 0; j < clusterCount; j++) {
-                residuals[i][j] = computeResidual(x, codebooks[i], j, centroidNormsSquared[i][j], xNormSquared, inverseNorm);
+                residuals[i][j] = computeResidual(x, i, j, centroidNormsSquared[i][j], xNormSquared, inverseNorm);
             }
         }
 
@@ -404,8 +424,8 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
         }
     }
 
-    private Residual computeResidual(VectorFloat<?> x, VectorFloat<?> centroids, int centroid, float cNormSquared, float xNormSquared, float inverseNorm) {
-        float cDotX = VectorUtil.dotProduct(centroids, centroid * x.length(), x, 0, x.length());
+    private Residual computeResidual(VectorFloat<?> x, int subspace, int centroid, float cNormSquared, float xNormSquared, float inverseNorm) {
+        float cDotX = centroidDot(subspace, centroid, x, 0);
         float residualNormSquared = cNormSquared - 2 * cDotX + xNormSquared;
         float parallelErrorSubtotal = cDotX - xNormSquared;
         float parallelResidualComponent = square(parallelErrorSubtotal) * inverseNorm;
@@ -414,7 +434,7 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
 
     private void encodeUnweighted(VectorFloat<?> vector, ByteSequence<?> dest) {
         for (int m = 0; m < M; m++) {
-            dest.set(m, (byte) closestCentroidIndex(vector, m, codebooks[m]));
+            dest.set(m, (byte) closestCentroidIndex(vector, m));
         }
     }
 
@@ -459,7 +479,7 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
     void decodeCentered(ByteSequence<?> encoded, VectorFloat<?> target) {
         for (int m = 0; m < M; m++) {
             int centroidIndex = Byte.toUnsignedInt(encoded.get(m));
-            target.copyFrom(codebooks[m], centroidIndex * subvectorSizesAndOffsets[m][0], subvectorSizesAndOffsets[m][1], subvectorSizesAndOffsets[m][0]);
+            copyCentroid(m, centroidIndex, target, subvectorSizesAndOffsets[m][1]);
         }
     }
 
@@ -482,9 +502,12 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
         return subvectorSizesAndOffsets[m][0];
     }
 
-    /** Subspace {@code m}'s codebook: {@code clusterCount} contiguous subvectors. Read-only use. */
+    /**
+     * Subspace {@code m}'s codebook: {@code clusterCount} contiguous subvectors. Read-only use.
+     * A transposed search compressor returns a detached centroid-major copy.
+     */
     public VectorFloat<?> getCodebookVector(int m) {
-        return codebooks[m];
+        return centroidMajorCodebook(m);
     }
 
     /** The global centroid subtracted before encoding, or {@code null} when not center-adjusted. */
@@ -512,17 +535,20 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
                 .toArray(VectorFloat<?>[]::new);
     }
 
-    int closestCentroidIndex(VectorFloat<?> subvector, int m, VectorFloat<?> codebook) {
+    int closestCentroidIndex(VectorFloat<?> subvector, int m) {
         int index = 0;
         float minDist = Float.MAX_VALUE;
-        int subvectorSize = subvectorSizesAndOffsets[m][0];
         int subvectorOffset = subvectorSizesAndOffsets[m][1];
-        int bulkNearest = VectorUtil.tryClosestCentroid(subvector, subvectorOffset, codebook, clusterCount, subvectorSize);
-        if (bulkNearest >= 0) {
-            return bulkNearest;
+        // The bulk kernel scans a centroid-major codebook. Sustained encoding with a
+        // transposed search compressor should use forEncoding() rather than this path.
+        if (!isTransposed()) {
+            int bulkNearest = VectorUtil.tryClosestCentroid(subvector, subvectorOffset, codebooks[m], clusterCount, subvectorWidths[m]);
+            if (bulkNearest >= 0) {
+                return bulkNearest;
+            }
         }
         for (int i = 0; i < clusterCount; i++) {
-            float dist = VectorUtil.squareL2Distance(subvector, subvectorOffset, codebook, i * subvectorSize, subvectorSize);
+            float dist = centroidDistance(m, i, subvector, subvectorOffset);
             if (dist < minDist) {
                 minDist = dist;
                 index = i;
@@ -601,12 +627,19 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
             out.writeFloat(anisotropicThreshold);
         }
 
-        assert codebooks.length == M;
         out.writeInt(clusterCount);
-        for (int i = 0; i < M; i++) {
-            var codebook = codebooks[i];
-            assert codebook.length() == clusterCount * subvectorSizesAndOffsets[i][0];
-            vectorTypeSupport.writeFloatVector(out, codebook);
+        // Keep the existing centroid-major binary format, regardless of the
+        // in-memory representation. No second complete collection is built.
+        for (int m = 0; m < M; m++) {
+            if (!isTransposed()) {
+                vectorTypeSupport.writeFloatVector(out, codebooks[m]);
+                continue;
+            }
+            for (int c = 0; c < clusterCount; c++) {
+                for (int d = 0; d < subvectorWidths[m]; d++) {
+                    out.writeFloat(coordinate(m, c, d));
+                }
+            }
         }
     }
 
@@ -622,14 +655,12 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
         VectorFloat<?> partialSums = vectorTypeSupport.createFloatVector(getSubspaceCount() * getClusterCount() * (getClusterCount() + 1) / 2);
         int index = 0;
         for (int m = 0; m < M; m++) {
-            int size = subvectorSizesAndOffsets[m][0];
-            var codebook = codebooks[m];
             for (int i = 0; i < clusterCount; i++) {
                 for (int j = i; j < clusterCount; j++) {
 
                     float sum = vectorSimilarityFunction == VectorSimilarityFunction.EUCLIDEAN ?
-                            VectorUtil.squareL2Distance(codebook, i * size, codebook, j * size, size) :
-                            VectorUtil.dotProduct(codebook, i * size, codebook, j * size, size);
+                            centroidDistance(m, i, j) :
+                            centroidDot(m, i, j);
 
                     partialSums.set(index++, sum);
                 }
@@ -652,13 +683,25 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
         size += Integer.BYTES * M; // subvectorSizesAndOffsets (only the sizes are written)
         size += Float.BYTES; // anisotropicThreshold
         size += Integer.BYTES; // clusterCount
-        for (int i = 0; i < M; i++) {
-            size += Float.BYTES * codebooks[i].length();
-        }
+        size += Float.BYTES * originalDimension * clusterCount;
         return size;
     }
 
     public static ProductQuantization load(RandomAccessReader in) throws IOException {
+        return load(in, false);
+    }
+
+    /** Prepare an immutable in-memory layout for cosine or dot-product search. */
+    public static ProductQuantization loadForSearch(RandomAccessReader in, VectorSimilarityFunction similarity) throws IOException {
+        return load(in, similarity == VectorSimilarityFunction.COSINE || similarity == VectorSimilarityFunction.DOT_PRODUCT);
+    }
+
+    /**
+     * Read the unchanged binary format into the provider's preferred search
+     * layout. Unsupported shapes retain the original bulk path. This does not
+     * mutate a compressor shared by another reader or retain a second copy.
+     */
+    static ProductQuantization load(RandomAccessReader in, boolean prepareForSearch) throws IOException {
         int maybeMagic = in.readInt();
         int version;
         int globalCentroidLength;
@@ -695,12 +738,23 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
         }
 
         int clusters = in.readInt();
+        if (prepareForSearch && VectorUtil.supportsTransposedPQ(subvectorSizes, clusters)) {
+            var coordinates = vectorTypeSupport.createFloatVector(Math.multiplyExact(offset, clusters));
+            for (int m = 0; m < M; m++) {
+                int width = subvectorSizes[m][0];
+                int start = subvectorSizes[m][1] * clusters;
+                for (int c = 0; c < clusters; c++) {
+                    for (int d = 0; d < width; d++) {
+                        coordinates.set(start + d * clusters + c, in.readFloat());
+                    }
+                }
+            }
+            return new ProductQuantization(null, coordinates, clusters, subvectorSizes, globalCentroid, anisotropicThreshold);
+        }
         VectorFloat<?>[] codebooks = new VectorFloat<?>[M];
         for (int m = 0; m < M; m++) {
-            VectorFloat<?> codebook = vectorTypeSupport.readFloatVector(in, clusters * subvectorSizes[m][0]);
-            codebooks[m] = codebook;
+            codebooks[m] = vectorTypeSupport.readFloatVector(in, clusters * subvectorSizes[m][0]);
         }
-
         return new ProductQuantization(codebooks, clusters, subvectorSizes, globalCentroid, anisotropicThreshold);
     }
 
@@ -713,14 +767,14 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
                 && originalDimension == that.originalDimension
                 && Objects.equals(globalCentroid, that.globalCentroid)
                 && Arrays.deepEquals(subvectorSizesAndOffsets, that.subvectorSizesAndOffsets)
-                && Arrays.deepEquals(codebooks, that.codebooks)
+                && codebooksEqual(that)
                 && anisotropicThreshold == that.anisotropicThreshold;
     }
 
     @Override
     public int hashCode() {
         int result = Objects.hash(M, originalDimension);
-        result = 31 * result + Arrays.deepHashCode(codebooks);
+        result = 31 * result + codebookHash();
         result = 31 * result + Objects.hashCode(globalCentroid);
         result = 31 * result + Arrays.deepHashCode(subvectorSizesAndOffsets);
         return result;
@@ -740,7 +794,7 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
             for (int i = 0; i < clusterCount; i++) {
                 var subspaceSize = subvectorSizesAndOffsets[m][0];
                 var subCentroid = vectorTypeSupport.createFloatVector(subspaceSize);
-                subCentroid.copyFrom(codebooks[m], i * subspaceSize, 0, subspaceSize);
+                copyCentroid(m, i, subCentroid, 0);
                 // we don't have addInPlace for vectors of different length, so do it by hand
                 for (int j = 0; j < subspaceSize; j++) {
                     var k = subvectorSizesAndOffsets[m][1] + j;
@@ -754,17 +808,120 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
 
     @Override
     public int compressedVectorSize() {
-        return codebooks.length;
+        return M;
     }
 
     @Override
     public long ramBytesUsed() {
         long size = 0;
-        for (VectorFloat<?> codebook : codebooks) {
-            size += codebook.ramBytesUsed();
+        if (transposedCodebooks != null) {
+            size += transposedCodebooks.ramBytesUsed();
+        } else {
+            for (VectorFloat<?> codebook : codebooks) size += codebook.ramBytesUsed();
         }
+        size += 32L + 8L * M; // immutable width and offset arrays
+        size += 16L + 8L * M + M * (16L + 4L * clusterCount); // centroid norms
 
         return size;
+    }
+
+
+    /** Whether this search compressor retains its coordinates in transposed order. */
+    public boolean isTransposed() {
+        return transposedCodebooks != null;
+    }
+
+    private float coordinate(int m, int c, int d) {
+        return isTransposed() ? transposedCodebooks.get(subvectorOffsets[m] * clusterCount + d * clusterCount + c)
+                              : codebooks[m].get(c * subvectorWidths[m] + d);
+    }
+
+    void copyCentroid(int m, int c, VectorFloat<?> target, int offset) {
+        if (!isTransposed()) {
+            target.copyFrom(codebooks[m], c * subvectorWidths[m], offset, subvectorWidths[m]);
+        } else {
+            for (int d = 0; d < subvectorWidths[m]; d++) target.set(offset + d, coordinate(m, c, d));
+        }
+    }
+
+    private VectorFloat<?> centroidMajorCodebook(int m) {
+        if (!isTransposed()) return codebooks[m];
+        var result = vectorTypeSupport.createFloatVector(subvectorWidths[m] * clusterCount);
+        for (int c = 0; c < clusterCount; c++) copyCentroid(m, c, result, c * subvectorWidths[m]);
+        return result;
+    }
+
+    float centroidDot(int m, int c, VectorFloat<?> query, int offset) {
+        if (!isTransposed()) return VectorUtil.dotProduct(codebooks[m], c * subvectorWidths[m], query, offset, subvectorWidths[m]);
+        var scratch = centroidScratch.get()[0];
+        copyCentroid(m, c, scratch, 0);
+        return VectorUtil.dotProduct(scratch, 0, query, offset, subvectorWidths[m]);
+    }
+
+    float centroidDot(int m, int a, int b) {
+        if (!isTransposed()) return VectorUtil.dotProduct(codebooks[m], a * subvectorWidths[m], codebooks[m], b * subvectorWidths[m], subvectorWidths[m]);
+        var scratch = centroidScratch.get();
+        copyCentroid(m, a, scratch[0], 0);
+        copyCentroid(m, b, scratch[1], 0);
+        return VectorUtil.dotProduct(scratch[0], 0, scratch[1], 0, subvectorWidths[m]);
+    }
+
+    float centroidDistance(int m, int c, VectorFloat<?> query, int offset) {
+        if (!isTransposed()) return VectorUtil.squareL2Distance(codebooks[m], c * subvectorWidths[m], query, offset, subvectorWidths[m]);
+        var scratch = centroidScratch.get()[0];
+        copyCentroid(m, c, scratch, 0);
+        return VectorUtil.squareL2Distance(scratch, 0, query, offset, subvectorWidths[m]);
+    }
+
+    float centroidDistance(int m, int a, int b) {
+        if (!isTransposed()) return VectorUtil.squareL2Distance(codebooks[m], a * subvectorWidths[m], codebooks[m], b * subvectorWidths[m], subvectorWidths[m]);
+        var scratch = centroidScratch.get();
+        copyCentroid(m, a, scratch[0], 0);
+        copyCentroid(m, b, scratch[1], 0);
+        return VectorUtil.squareL2Distance(scratch[0], 0, scratch[1], 0, subvectorWidths[m]);
+    }
+
+    float centroidNorm(int m, int c) {
+        return centroidNormsSquared[m][c];
+    }
+
+    void calculatePartialSums(VectorFloat<?> centeredQuery, VectorSimilarityFunction similarity, VectorFloat<?> output) {
+        if (isTransposed() && similarity == VectorSimilarityFunction.DOT_PRODUCT) {
+            VectorUtil.calculateTransposedPQDotProducts(transposedCodebooks, subvectorWidths, subvectorOffsets,
+                                                       clusterCount, centeredQuery, output);
+            return;
+        }
+        for (int m = 0; m < M; m++) {
+            if (!isTransposed()) {
+                VectorUtil.calculatePartialSums(codebooks[m], m, subvectorWidths[m], clusterCount,
+                                                centeredQuery, subvectorOffsets[m], similarity, output);
+            } else {
+                // Euclidean search keeps the original distance calculation
+                // rather than introducing cancellation through norm identities.
+                for (int c = 0; c < clusterCount; c++) {
+                    output.set(m * clusterCount + c, centroidDistance(m, c, centeredQuery, subvectorOffsets[m]));
+                }
+            }
+        }
+    }
+
+    VectorFloat<?> createPartialSquaredMagnitudes() {
+        var result = vectorTypeSupport.createFloatVector(M * clusterCount);
+        for (int m = 0; m < M; m++) for (int c = 0; c < clusterCount; c++) result.set(m * clusterCount + c, centroidNormsSquared[m][c]);
+        return result;
+    }
+
+    private boolean codebooksEqual(ProductQuantization that) {
+        for (int m = 0; m < M; m++) {
+            if (!centroidMajorCodebook(m).equals(that.centroidMajorCodebook(m))) return false;
+        }
+        return true;
+    }
+
+    private int codebookHash() {
+        int hash = 1;
+        for (int m = 0; m < M; m++) hash = 31 * hash + centroidMajorCodebook(m).hashCode();
+        return hash;
     }
 
     @Override
@@ -809,9 +966,8 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
         float sum = 0;
         for (int m = 0; m < M; m++) {
             int centroidIndex = Byte.toUnsignedInt(code.get(m));
-            int centroidLength = subvectorSizesAndOffsets[m][0];
             int centroidOffset = subvectorSizesAndOffsets[m][1];
-            sum += VectorUtil.squareL2Distance(codebooks[m], centroidIndex * centroidLength, vector, centroidOffset, centroidLength);
+            sum += centroidDistance(m, centroidIndex, vector, centroidOffset);
         }
 
         return sum / vector.length();

@@ -61,3 +61,6 @@ void closest_centroid_f32(void) {}
 void nvq_growth_rate(void) {}
 void scale_to_f32(void) {}
 void subtract_add_in_place_f32(void) {}
+
+// Transposed PQ lookup-table kernel.
+void calculate_transposed_pq_dot_f32(void) {}

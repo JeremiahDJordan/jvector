@@ -27,6 +27,8 @@
                 <includes>
                     <include>libjvector-x86_64.so</include>
                     <include>libjvector-aarch64.so</include>
+                    <include>libjvector-x86_64.dylib</include>
+                    <include>libjvector-aarch64.dylib</include>
                 </includes>
             </resource>
         </resources>
@@ -51,6 +53,7 @@
                 <configuration>
                     <nonFilteredFileExtensions>
                         <nonFilteredFileExtension>so</nonFilteredFileExtension>
+                        <nonFilteredFileExtension>dylib</nonFilteredFileExtension>
                     </nonFilteredFileExtensions>
                 </configuration>
             </plugin>
@@ -123,6 +126,29 @@
             </properties>
         </profile>
 
+        <profile>
+            <id>macos-native</id>
+            <activation><os><family>mac</family></os></activation>
+            <build><plugins><plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <executions><execution>
+                    <id>execute-native-compile-script</id>
+                    <phase>generate-resources</phase>
+                    <goals><goal>exec</goal></goals>
+                    <configuration>
+                        <executable>bash</executable>
+                        <arguments>
+                            <argument>build_native_lib.sh</argument>
+                            <argument>${native.buildtype}</argument>
+                            <argument>${native.crossarch}</argument>
+                        </arguments>
+                        <skip>false</skip>
+                        <workingDirectory>${project.basedir}/src/main/native/src/</workingDirectory>
+                    </configuration>
+                </execution></executions>
+            </plugin></plugins></build>
+        </profile>
         <profile>
             <id>unix-amd64-profile</id>
             <activation>

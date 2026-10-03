@@ -51,5 +51,6 @@ fi
   "${SCRIPT_DIR}/jvector_simd.h"
 
 # Set critical linker option with heap-based segments for all generated methods
-sed -i 's/DESC)/DESC, Linker.Option.critical(true))/g' \
-  "${JAVA_OUT_DIR}/io/github/jbellis/jvector/vector/cnative/NativeSimdOps.java"
+bindings="${JAVA_OUT_DIR}/io/github/jbellis/jvector/vector/cnative/NativeSimdOps.java"
+sed 's/DESC)/DESC, Linker.Option.critical(true))/g' "${bindings}" > "${bindings}.tmp"
+mv "${bindings}.tmp" "${bindings}"

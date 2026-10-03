@@ -53,8 +53,12 @@ public abstract class PQVectors implements CompressedVectors {
     }
 
     public static ImmutablePQVectors load(RandomAccessReader in) throws IOException {
-        // pq codebooks
-        var pq = ProductQuantization.load(in);
+        return load(in, false);
+    }
+
+    /** Read unchanged PQ bytes, optionally preparing one preferred codebook layout for search. */
+    static ImmutablePQVectors load(RandomAccessReader in, boolean prepareForSearch) throws IOException {
+        var pq = ProductQuantization.load(in, prepareForSearch);
 
         // read the vectors
         int vectorCount = in.readInt();
@@ -78,6 +82,12 @@ public abstract class PQVectors implements CompressedVectors {
     public static PQVectors load(RandomAccessReader in, long offset) throws IOException {
         in.seek(offset);
         return load(in);
+    }
+
+    /** Load existing PQ bytes using the provider's preferred cosine/dot-product layout. */
+    public static PQVectors loadForSearch(RandomAccessReader in, long offset, VectorSimilarityFunction similarity) throws IOException {
+        in.seek(offset);
+        return load(in, similarity == VectorSimilarityFunction.COSINE || similarity == VectorSimilarityFunction.DOT_PRODUCT);
     }
 
     /**
@@ -231,9 +241,8 @@ public abstract class PQVectors implements CompressedVectors {
                     float dp = 0;
                     for (int m = 0; m < subspaceCount; m++) {
                         int centroidIndex = Byte.toUnsignedInt(encodedChunk.get(m + encodedOffset));
-                        int centroidLength = pq.subvectorSizesAndOffsets[m][0];
                         int centroidOffset = pq.subvectorSizesAndOffsets[m][1];
-                        dp += VectorUtil.dotProduct(pq.codebooks[m], centroidIndex * centroidLength, centeredQuery, centroidOffset, centroidLength);
+                        dp += pq.centroidDot(m, centroidIndex, centeredQuery, centroidOffset);
                     }
                     // scale to [0, 1]
                     return (1 + dp) / 2;
@@ -248,11 +257,9 @@ public abstract class PQVectors implements CompressedVectors {
                     float norm2 = 0;
                     for (int m = 0; m < subspaceCount; m++) {
                         int centroidIndex = Byte.toUnsignedInt(encodedChunk.get(m + encodedOffset));
-                        int centroidLength = pq.subvectorSizesAndOffsets[m][0];
                         int centroidOffset = pq.subvectorSizesAndOffsets[m][1];
-                        var codebookOffset = centroidIndex * centroidLength;
-                        sum += VectorUtil.dotProduct(pq.codebooks[m], codebookOffset, centeredQuery, centroidOffset, centroidLength);
-                        norm2 += VectorUtil.dotProduct(pq.codebooks[m], codebookOffset, pq.codebooks[m], codebookOffset, centroidLength);
+                        sum += pq.centroidDot(m, centroidIndex, centeredQuery, centroidOffset);
+                        norm2 += pq.centroidNorm(m, centroidIndex);
                     }
                     float cosine = sum / (float) Math.sqrt(norm1 * norm2);
                     // scale to [0, 1]
@@ -266,9 +273,8 @@ public abstract class PQVectors implements CompressedVectors {
                     float sum = 0;
                     for (int m = 0; m < subspaceCount; m++) {
                         int centroidIndex = Byte.toUnsignedInt(encodedChunk.get(m + encodedOffset));
-                        int centroidLength = pq.subvectorSizesAndOffsets[m][0];
                         int centroidOffset = pq.subvectorSizesAndOffsets[m][1];
-                        sum += VectorUtil.squareL2Distance(pq.codebooks[m], centroidIndex * centroidLength, centeredQuery, centroidOffset, centroidLength);
+                        sum += pq.centroidDistance(m, centroidIndex, centeredQuery, centroidOffset);
                     }
                     // scale to [0, 1]
                     return 1 / (1 + sum);
@@ -294,8 +300,7 @@ public abstract class PQVectors implements CompressedVectors {
                     for (int m = 0; m < subspaceCount; m++) {
                         int centroidIndex1 = Byte.toUnsignedInt(node1Chunk.get(m + node1Offset));
                         int centroidIndex2 = Byte.toUnsignedInt(node2Chunk.get(m + node2Offset));
-                        int centroidLength = pq.subvectorSizesAndOffsets[m][0];
-                        dp += VectorUtil.dotProduct(pq.codebooks[m], centroidIndex1 * centroidLength, pq.codebooks[m], centroidIndex2 * centroidLength, centroidLength);
+                        dp += pq.centroidDot(m, centroidIndex1, centroidIndex2);
                     }
                     // scale to [0, 1]
                     return (1 + dp) / 2;
@@ -304,9 +309,7 @@ public abstract class PQVectors implements CompressedVectors {
                 float norm1 = 0.0f;
                 for (int m1 = 0; m1 < subspaceCount; m1++) {
                     int centroidIndex = Byte.toUnsignedInt(node1Chunk.get(m1 + node1Offset));
-                    int centroidLength = pq.subvectorSizesAndOffsets[m1][0];
-                    var codebookOffset = centroidIndex * centroidLength;
-                    norm1 += VectorUtil.dotProduct(pq.codebooks[m1], codebookOffset, pq.codebooks[m1], codebookOffset, centroidLength);
+                    norm1 += pq.centroidNorm(m1, centroidIndex);
                 }
                 final float norm1final = norm1;
                 return (node2) -> {
@@ -318,10 +321,8 @@ public abstract class PQVectors implements CompressedVectors {
                     for (int m = 0; m < subspaceCount; m++) {
                         int centroidIndex1 = Byte.toUnsignedInt(node1Chunk.get(m + node1Offset));
                         int centroidIndex2 = Byte.toUnsignedInt(node2Chunk.get(m + node2Offset));
-                        int centroidLength = pq.subvectorSizesAndOffsets[m][0];
-                        int codebookOffset = centroidIndex2 * centroidLength;
-                        sum += VectorUtil.dotProduct(pq.codebooks[m], codebookOffset, pq.codebooks[m], centroidIndex1 * centroidLength, centroidLength);
-                        norm2 += VectorUtil.dotProduct(pq.codebooks[m], codebookOffset, pq.codebooks[m], codebookOffset, centroidLength);
+                        sum += pq.centroidDot(m, centroidIndex2, centroidIndex1);
+                        norm2 += pq.centroidNorm(m, centroidIndex2);
                     }
                     float cosine = sum / (float) Math.sqrt(norm1final * norm2);
                     // scale to [0, 1]
@@ -336,8 +337,7 @@ public abstract class PQVectors implements CompressedVectors {
                     for (int m = 0; m < subspaceCount; m++) {
                         int centroidIndex1 = Byte.toUnsignedInt(node1Chunk.get(m + node1Offset));
                         int centroidIndex2 = Byte.toUnsignedInt(node2Chunk.get(m + node2Offset));
-                        int centroidLength = pq.subvectorSizesAndOffsets[m][0];
-                        sum += VectorUtil.squareL2Distance(pq.codebooks[m], centroidIndex1 * centroidLength, pq.codebooks[m], centroidIndex2 * centroidLength, centroidLength);
+                        sum += pq.centroidDistance(m, centroidIndex1, centroidIndex2);
                     }
                     // scale to [0, 1]
                     return 1 / (1 + sum);

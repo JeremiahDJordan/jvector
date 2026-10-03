@@ -53,11 +53,13 @@ public class TestVectorizationProviderSelection {
     }
 
     private static boolean nativeAvailable() throws Exception {
-        if (Runtime.version().feature() < 22 || !HAS_VECTOR_MODULE
-                || !System.getProperty("os.name").startsWith("Linux")) return false;
+        String os = System.getProperty("os.name");
+        String extension = os.startsWith("Linux") ? ".so"
+                : (os.startsWith("Mac") || os.startsWith("Darwin")) ? ".dylib" : null;
+        if (Runtime.version().feature() < 22 || !HAS_VECTOR_MODULE || extension == null) return false;
         String arch = System.getProperty("os.arch");
-        String resource = arch.equals("aarch64") ? "/libjvector-aarch64.so"
-                : (arch.equals("amd64") || arch.equals("x86_64")) ? "/libjvector-x86_64.so" : null;
+        String resource = (arch.equals("aarch64") || arch.equals("arm64")) ? "/libjvector-aarch64" + extension
+                : (arch.equals("amd64") || arch.equals("x86_64")) ? "/libjvector-x86_64" + extension : null;
         if (resource == null) return false;
         try {
             return Class.forName("io.github.jbellis.jvector.vector.NativeVectorizationProvider", false,
@@ -382,7 +384,8 @@ public class TestVectorizationProviderSelection {
         command.add("cc"); command.add("-shared"); command.add("-fPIC");
         command.addAll(Arrays.asList(definitions));
         command.add(source.toString()); command.add("-o");
-        command.add(directory.resolve("libjvector.so").toString());
+        // System.loadLibrary looks for libjvector.so on Linux and libjvector.dylib on macOS.
+        command.add(directory.resolve(System.mapLibraryName("jvector")).toString());
         var log = directory.resolve("compiler.log");
         Process compiler;
         try {

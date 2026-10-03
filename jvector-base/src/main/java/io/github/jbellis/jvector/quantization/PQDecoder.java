@@ -18,16 +18,13 @@ package io.github.jbellis.jvector.quantization;
 import io.github.jbellis.jvector.graph.similarity.ScoreFunction;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import io.github.jbellis.jvector.vector.VectorUtil;
-import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.ByteSequence;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
-import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
 /**
  * Performs similarity comparisons with compressed vectors without decoding them
  */
 abstract class PQDecoder implements ScoreFunction.ApproximateScoreFunction {
-    private static final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
 
     protected final PQVectors cv;
 
@@ -45,12 +42,7 @@ abstract class PQDecoder implements ScoreFunction.ApproximateScoreFunction {
 
             VectorFloat<?> center = pq.globalCentroid;
             var centeredQuery = center == null ? query : VectorUtil.sub(query, center);
-            for (var i = 0; i < pq.getSubspaceCount(); i++) {
-                int offset = pq.subvectorSizesAndOffsets[i][1];
-                int size = pq.subvectorSizesAndOffsets[i][0];
-                var codebook = pq.codebooks[i];
-                VectorUtil.calculatePartialSums(codebook, i, size, pq.getClusterCount(), centeredQuery, offset, vsf, partialSums);
-            }
+            pq.calculatePartialSums(centeredQuery, vsf, partialSums);
         }
 
         protected float decodedSimilarity(ByteSequence<?> encoded, int offset, int length) {
@@ -95,13 +87,7 @@ abstract class PQDecoder implements ScoreFunction.ApproximateScoreFunction {
                     return current;
                 }
 
-                var partialMagnitudes = vts.createFloatVector(pq.getSubspaceCount() * pq.getClusterCount());
-                for (int m = 0; m < pq.getSubspaceCount(); ++m) {
-                    int size = pq.subvectorSizesAndOffsets[m][0];
-                    var codebook = pq.codebooks[m];
-                    VectorUtil.calculatePartialSelfMagnitudes(codebook, m, size, pq.getClusterCount(), partialMagnitudes);
-                }
-                return partialMagnitudes;
+                return pq.createPartialSquaredMagnitudes();
             });
 
 
@@ -111,12 +97,7 @@ abstract class PQDecoder implements ScoreFunction.ApproximateScoreFunction {
             VectorFloat<?> center = pq.globalCentroid;
             VectorFloat<?> centeredQuery = center == null ? query : VectorUtil.sub(query, center);
 
-            for (int m = 0; m < pq.getSubspaceCount(); ++m) {
-                int offset = pq.subvectorSizesAndOffsets[m][1];
-                int size = pq.subvectorSizesAndOffsets[m][0];
-                var codebook = pq.codebooks[m];
-                VectorUtil.calculatePartialSums(codebook, m, size, pq.getClusterCount(), centeredQuery, offset, VectorSimilarityFunction.DOT_PRODUCT, partialSums);
-            }
+            pq.calculatePartialSums(centeredQuery, VectorSimilarityFunction.DOT_PRODUCT, partialSums);
 
             this.bMagnitude = VectorUtil.dotProduct(centeredQuery, centeredQuery);
         }

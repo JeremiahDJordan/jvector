@@ -247,6 +247,25 @@ public final class VectorUtil {
     impl.calculatePartialSelfMagnitudes(codebook, codebookIndex, size, clusterCount, partialMagnitudes);
   }
 
+  public static boolean supportsTransposedPQ(int[][] subspaces, int clusters) {
+    return impl.supportsTransposedPQ(subspaces, clusters);
+  }
+
+  public static void calculateTransposedPQDotProducts(VectorFloat<?> coordinates, int[] widths, int[] offsets,
+                                                     int clusters, VectorFloat<?> query, VectorFloat<?> output) {
+    if (clusters <= 0 || widths.length == 0 || widths.length != offsets.length)
+      throw new IllegalArgumentException("Positive clusters and matching nonempty subspaces are required");
+    long dimensions = 0;
+    for (int m = 0; m < widths.length; m++) {
+      if (widths[m] <= 0 || offsets[m] < 0 || (long) offsets[m] + widths[m] > query.length())
+        throw new IllegalArgumentException("PQ query slice is outside the query vector");
+      dimensions += widths[m];
+    }
+    if (dimensions * clusters > coordinates.length() || (long) widths.length * clusters > output.length())
+      throw new IllegalArgumentException("PQ coordinate or lookup-table buffer is too small");
+    impl.calculateTransposedPQDotProducts(coordinates, widths, offsets, clusters, query, output);
+  }
+
   /**
    * Calculates the maximum value in the vector.
    * @param v vector

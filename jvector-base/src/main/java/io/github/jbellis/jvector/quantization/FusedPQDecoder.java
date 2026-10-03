@@ -21,10 +21,8 @@ import io.github.jbellis.jvector.graph.disk.feature.FusedFeature;
 import io.github.jbellis.jvector.graph.similarity.ScoreFunction;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import io.github.jbellis.jvector.vector.VectorUtil;
-import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.ByteSequence;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
-import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 import org.agrona.collections.Int2ObjectHashMap;
 
 /**
@@ -32,7 +30,6 @@ import org.agrona.collections.Int2ObjectHashMap;
  * These decoders use vectors fused into a graph.
  */
 public abstract class FusedPQDecoder implements ScoreFunction.ApproximateScoreFunction {
-    private static final VectorTypeSupport vts = VectorizationProvider.getInstance().getVectorTypeSupport();
     protected final ProductQuantization pq;
     Int2ObjectHashMap<FusedFeature.InlineSource> hierarchyCachedFeatures;
     protected final VectorFloat<?> query;
@@ -67,12 +64,7 @@ public abstract class FusedPQDecoder implements ScoreFunction.ApproximateScoreFu
         if (vsf != VectorSimilarityFunction.COSINE) {
             VectorFloat<?> center = pq.globalCentroid;
             var centeredQuery = center == null ? query : VectorUtil.sub(query, center);
-            for (var i = 0; i < pq.getSubspaceCount(); i++) {
-                int offset = pq.subvectorSizesAndOffsets[i][1];
-                int size = pq.subvectorSizesAndOffsets[i][0];
-                var codebook = pq.codebooks[i];
-                VectorUtil.calculatePartialSums(codebook, i, size, pq.getClusterCount(), centeredQuery, offset, vsf, partialSums);
-            }
+            pq.calculatePartialSums(centeredQuery, vsf, partialSums);
         }
     }
 
@@ -159,32 +151,17 @@ public abstract class FusedPQDecoder implements ScoreFunction.ApproximateScoreFu
                     return current;
                 }
 
-                var partialSquaredMagnitudes = vts.createFloatVector(pq.getSubspaceCount() * pq.getClusterCount());
-                for (int m = 0; m < pq.getSubspaceCount(); ++m) {
-                    int size = pq.subvectorSizesAndOffsets[m][0];
-                    var codebook = pq.codebooks[m];
-                    float minPartialMagnitude = Float.POSITIVE_INFINITY;
-                    float maxPartialMagnitude = 0;
-                    for (int j = 0; j < pq.getClusterCount(); ++j) {
-                        var partialMagnitude = VectorUtil.dotProduct(codebook, j * size, codebook, j * size, size);
-                        minPartialMagnitude = Math.min(minPartialMagnitude, partialMagnitude);
-                        maxPartialMagnitude = Math.max(maxPartialMagnitude, partialMagnitude);
-                        partialSquaredMagnitudes.set((m * pq.getClusterCount()) + j, partialMagnitude);
-                    }
-                }
-                return partialSquaredMagnitudes;
+                return pq.createPartialSquaredMagnitudes();
             });
 
             // compute partialSums
             VectorFloat<?> center = pq.globalCentroid;
             float queryMagSum = 0.0f;
             var centeredQuery = center == null ? query : VectorUtil.sub(query, center);
-            for (var i = 0; i < pq.getSubspaceCount(); i++) {
+            pq.calculatePartialSums(centeredQuery, VectorSimilarityFunction.DOT_PRODUCT, partialSums);
+            for (int i = 0; i < pq.getSubspaceCount(); i++) {
                 int offset = pq.subvectorSizesAndOffsets[i][1];
                 int size = pq.subvectorSizesAndOffsets[i][0];
-                var codebook = pq.codebooks[i];
-                // cosine numerator is the same partial sums as if we were using DOT_PRODUCT
-                VectorUtil.calculatePartialSums(codebook, i, size, pq.getClusterCount(), centeredQuery, offset, VectorSimilarityFunction.DOT_PRODUCT, partialSums);
                 queryMagSum += VectorUtil.dotProduct(centeredQuery, offset, centeredQuery, offset, size);
             }
 

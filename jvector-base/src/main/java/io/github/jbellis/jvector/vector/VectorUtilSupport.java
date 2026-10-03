@@ -177,6 +177,47 @@ public interface VectorUtilSupport {
 
   void calculatePartialSums(VectorFloat<?> codebook, int codebookIndex, int size, int clusterCount, VectorFloat<?> query, int offset, VectorSimilarityFunction vsf, VectorFloat<?> partialSums);
 
+  /** Whether this provider benefits from coordinate-major PQ lookup tables for this shape. */
+  default boolean supportsTransposedPQ(int[][] subspaces, int clusters) {
+    // A provider must opt in. Scalar and Panama retain their existing codebooks.
+    return false;
+  }
+
+  /**
+   * Build all PQ dot-product lookup tables from one coordinate-major buffer.
+   * The buffer contains each subspace in order, with centroid coordinates
+   * contiguous across clusters. Widths and offsets describe the query slices.
+   */
+  default void calculateTransposedPQDotProducts(VectorFloat<?> coordinates, int[] widths, int[] offsets,
+                                               int clusters, VectorFloat<?> query, VectorFloat<?> output) {
+    if (coordinates instanceof io.github.jbellis.jvector.vector.types.FloatArray
+        && output instanceof io.github.jbellis.jvector.vector.types.FloatArray) {
+      float[] data = ((io.github.jbellis.jvector.vector.types.FloatArray) coordinates).array();
+      float[] sums = ((io.github.jbellis.jvector.vector.types.FloatArray) output).array();
+      int start = 0;
+      for (int m = 0; m < widths.length; m++) {
+        int out = m * clusters;
+        float first = query.get(offsets[m]);
+        for (int c = 0; c < clusters; c++) sums[out + c] = data[start + c] * first;
+        for (int d = 1; d < widths[m]; d++) {
+          float q = query.get(offsets[m] + d);
+          for (int c = 0; c < clusters; c++) sums[out + c] += data[start + d * clusters + c] * q;
+        }
+        start += widths[m] * clusters;
+      }
+    } else {
+      int start = 0;
+      for (int m = 0; m < widths.length; m++) {
+        for (int c = 0; c < clusters; c++) {
+          float sum = coordinates.get(start + c) * query.get(offsets[m]);
+          for (int d = 1; d < widths[m]; d++) sum += coordinates.get(start + d * clusters + c) * query.get(offsets[m] + d);
+          output.set(m * clusters + c, sum);
+        }
+        start += widths[m] * clusters;
+      }
+    }
+  }
+
   default void calculatePartialSelfMagnitudes(VectorFloat<?> codebook, int codebookIndex, int size, int clusterCount, VectorFloat<?> partialMagnitudes) {
     int codebookBase = codebookIndex * clusterCount;
     for (int i = 0; i < clusterCount; i++) {

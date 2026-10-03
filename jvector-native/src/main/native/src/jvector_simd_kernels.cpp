@@ -1903,4 +1903,42 @@ HWY_FLATTEN int64_t nvq_cosine_8bit_packed(const float   *HWY_RESTRICT vector,
     return ((int64_t)bmag_bits << 32) | (int64_t)(uint32_t)sum_bits;
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+__attribute__((optimize("fp-contract=off")))
+#endif
+void calculate_transposed_pq_dot_f32(const float *coordinates, const int32_t *widths,
+                             const int32_t *query_offsets, int32_t subspaces,
+                             int32_t clusters, const float *query, float *output) {
+#if defined(__clang__)
+    // Keep each centroid's accumulation order consistent with the Java path.
+    // Existing kernels retain their own contraction policy.
+#pragma clang fp contract(off)
+#endif
+    namespace hn = hwy::HWY_NAMESPACE;
+    const hn::ScalableTag<float> tag;
+    const size_t lanes = hn::Lanes(tag);
+    size_t coordinate_base = 0;
+    for (int32_t m = 0; m < subspaces; ++m) {
+        const int32_t width = widths[m];
+        const int32_t qbase = query_offsets[m];
+        size_t c = 0;
+        for (; c + lanes <= static_cast<size_t>(clusters); c += lanes) {
+            auto sum = hn::Mul(hn::LoadU(tag, coordinates + coordinate_base + c),
+                               hn::Set(tag, query[qbase]));
+            for (int32_t d = 1; d < width; ++d)
+                sum = hn::Add(sum, hn::Mul(
+                    hn::LoadU(tag, coordinates + coordinate_base + d * clusters + c),
+                    hn::Set(tag, query[qbase + d])));
+            hn::StoreU(sum, tag, output + m * clusters + c);
+        }
+        for (; c < static_cast<size_t>(clusters); ++c) {
+            float sum = coordinates[coordinate_base + c] * query[qbase];
+            for (int32_t d = 1; d < width; ++d)
+                sum += coordinates[coordinate_base + d * clusters + c] * query[qbase + d];
+            output[m * clusters + c] = sum;
+        }
+        coordinate_base += static_cast<size_t>(width) * clusters;
+    }
+}
+
 }  // namespace JV_ISA

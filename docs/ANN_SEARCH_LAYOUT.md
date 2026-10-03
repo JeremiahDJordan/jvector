@@ -1,0 +1,23 @@
+# PQ search layout and macOS native builds
+
+This branch builds on JVector's automatic Highway provider selection. It adds a transposed in-memory PQ codebook layout for eligible search loads, a Highway kernel that prepares that layout's lookup tables, and macOS host builds of the native library.
+
+Linux packages use `libjvector-{aarch64,x86_64}.so`; macOS packages use the equivalent `.dylib`. The transposed kernel is a bound native function like the others, so a library without it is rejected at provider creation and lookup falls back to Java.
+
+`ProductQuantization.loadForSearch` and `PQVectors.loadForSearch` read the existing centroid-major binary format directly into one provider-selected representation. Transposed storage is selected only for cosine/dot-product, an available transposed kernel, active Highway NEON, 256 centroids, and subvector widths from one through eight. The decision has no dataset identifiers or query thresholds. Other ISAs and Java implementations retain existing centroid-major bulk kernels; Euclidean readers retain the original distance path. Training and the existing `load` API remain centroid-major. Fused readers should keep the existing API.
+
+The transposed order is subspace, coordinate, centroid. One batched native call prepares a query's dot-product lookup tables across all subspaces. Query scoring then uses the existing PQ code lookup/accumulation kernels. Both normalized and unnormalized cosine/dot-product inputs are covered in the numerical tests. The kernel avoids contraction of multiply/add only in this new operation to keep accumulation stable. Existing kernels retain their policies.
+
+Serialization, versions, encoded vectors, compressor metadata, and checksums remain unchanged. A transposed compressor writes centroid-major bytes without constructing a second complete coordinate collection. Encoding, decoding, refinement, centroid comparisons, equality/hash, and fused metadata access work with either representation. Coordinates occupy one collection; widths/offsets, centroid norms, and bounded per-thread scratch are additional memory. Refining a search compressor may materialize one centroid-major subspace per parallel refinement task, but ordinary search opening does not duplicate the complete codebooks.
+
+Build the Java 11 base using JDK 11, skipping aggregate javadocs that require JDK 22. Build the overlays and assembled jar with JDK 22. Initialize the pinned Highway submodule first. The native build needs a C++17 compiler, Meson, and Ninja. macOS builds its host architecture with Clang; Linux retains its existing host/crossarch support. Build the full assembly reactor:
+
+```sh
+mvn -pl jvector-base -am -Dmaven.javadoc.skip=true -Dmaven.test.skip=true package
+# Switch to JDK 22 before the next command.
+mvn -pl jvector-base,jvector-twenty,jvector-native,jvector-multirelease -am install
+```
+
+The default revision on this local branch is `4.1.0-ann-search-SNAPSHOT`, matching the paired Cassandra branch. It is a local review artifact. Before release, publish a normal version, update Cassandra's coordinate, and exercise supported Linux/x86, Linux/ARM, and macOS packages and dispatch tiers in CI. Mac NEON results do not establish a benefit for SVE or x86; those kernels retain their original layouts.
+
+`LibraryLoaderTest` covers OS/architecture aliases. `TransposedPQProviderTest` covers eligibility. `TestSearchCodebookLayout` checks scores, byte-compatible serialization, encode/decode/refinement, fused scoring, generic shapes, and rejection of unsafe native lengths. Existing PQ/compressed-vector/fused tests should also run with assertions enabled under scalar Java, Java SIMD, and Highway.

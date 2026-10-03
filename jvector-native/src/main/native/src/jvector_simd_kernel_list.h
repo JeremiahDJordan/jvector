@@ -54,6 +54,7 @@
     KERNEL_ENTRY(void, subtract_add_in_place_f32, (float *oldSum, float *newSum, const float *point, size_t length), (oldSum, newSum, point, length)) \
     /* PQ kernels */ \
     KERNEL_ENTRY(int, closest_centroid_f32, (const float *point, size_t pointOffset, const float *centroids, int centroidCount, size_t dimension), (point, pointOffset, centroids, centroidCount, dimension)) \
+    KERNEL_ENTRY(void, calculate_transposed_pq_dot_f32, (const float *coordinates, const int32_t *widths, const int32_t *offsets, int32_t subspaces, int32_t clusters, const float *query, float *output), (coordinates, widths, offsets, subspaces, clusters, query, output)) \
     KERNEL_ENTRY(float, assemble_and_sum_f32, (const float *data, int dataBase, const unsigned char *baseOffsets, int baseOffsetsOffset, size_t baseOffsetsLength), (data, dataBase, baseOffsets, baseOffsetsOffset, baseOffsetsLength)) \
     KERNEL_ENTRY(float, assemble_and_sum_pq_f32, (const float *data, size_t subspaceCount, const unsigned char *baseOffsets1, int baseOffsetsOffset1, const unsigned char *baseOffsets2, int baseOffsetsOffset2, int clusterCount), (data, subspaceCount, baseOffsets1, baseOffsetsOffset1, baseOffsets2, baseOffsetsOffset2, clusterCount)) \
     KERNEL_ENTRY(float, pq_decoded_cosine_similarity_f32, (const unsigned char *baseOffsets, int baseOffsetsOffset, size_t baseOffsetsLength, int clusterCount, const float *partialSums, const float *aMagnitude, float bMagnitude), (baseOffsets, baseOffsetsOffset, baseOffsetsLength, clusterCount, partialSums, aMagnitude, bMagnitude)) \
