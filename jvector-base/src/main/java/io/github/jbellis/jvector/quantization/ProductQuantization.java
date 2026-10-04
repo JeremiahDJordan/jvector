@@ -831,6 +831,20 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
         return transposedCodebooks != null;
     }
 
+    /**
+     * Return a centroid-major compressor for sustained encoding and graph building.
+     * Search coordinates are immutable: conversion neither changes this compressor
+     * nor caches a second representation in it. The caller owns the returned copy.
+     * A compressor already in encoding order is returned unchanged.
+     */
+    public ProductQuantization forEncoding() {
+        if (!isTransposed()) return this;
+        VectorFloat<?>[] original = new VectorFloat<?>[M];
+        for (int m = 0; m < M; m++) original[m] = centroidMajorCodebook(m);
+        return new ProductQuantization(original, clusterCount, subvectorSizesAndOffsets,
+                                       globalCentroid, anisotropicThreshold);
+    }
+
     private float coordinate(int m, int c, int d) {
         return isTransposed() ? transposedCodebooks.get(subvectorOffsets[m] * clusterCount + d * clusterCount + c)
                               : codebooks[m].get(c * subvectorWidths[m] + d);
@@ -907,7 +921,12 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
 
     VectorFloat<?> createPartialSquaredMagnitudes() {
         var result = vectorTypeSupport.createFloatVector(M * clusterCount);
-        for (int m = 0; m < M; m++) for (int c = 0; c < clusterCount; c++) result.set(m * clusterCount + c, centroidNormsSquared[m][c]);
+        for (int m = 0; m < M; m++) {
+            // Preserve the original provider's cosine magnitude arithmetic. A
+            // search layout needs only one temporary subspace, not a full copy.
+            VectorUtil.calculatePartialSelfMagnitudes(centroidMajorCodebook(m), m,
+                    subvectorWidths[m], clusterCount, result);
+        }
         return result;
     }
 

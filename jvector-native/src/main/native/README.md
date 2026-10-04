@@ -21,8 +21,8 @@ This directory contains the C++ source for `libjvector-x86_64.so` and
 operations in JVector via the Java Foreign Function & Memory (FFM) API.
 
 > **Platform support:** Currently enabled on **Linux x86-64** (SSE4.2, AVX2,
-> AVX-512) and **Linux AArch64** (NEON, SVE, SVE2). Windows and macOS are not
-> yet supported.
+> AVX-512), **Linux AArch64** (NEON, SVE, SVE2), and **macOS x86-64/AArch64**
+> (host architecture builds). Windows is not supported.
 
 ---
 
@@ -824,3 +824,31 @@ When changing the native interface:
    including `jvector_supports_abi`, where the inspection tools are available.
    Export inspection complements the runtime tests; it does not establish ABI
    support by itself.
+
+## Multi-platform release assembly
+
+A normal Maven build bundles only libraries produced for that build's host.
+Do not publish that host-only jar as the multi-platform release. Build Linux
+with `-Dnative.crossarch` to produce both `.so` files, and build on each macOS
+architecture (or an explicitly validated macOS cross-build) for both `.dylib`
+files. Use the same source revision, pinned Highway revision, and build type.
+Collect the four `libjvector-{x86_64,aarch64}.{so,dylib}` files into
+`jvector-native/target/meson-build/` before the final Maven resource/assembly
+steps; resource copying includes each present library. Inspect the assembled
+multi-release jar, where native resources must be under `META-INF/versions/22/`.
+
+Run `jvector-native/verify_native_lib.sh --all <assembled-jar>` as a mandatory
+release gate. It requires all four resources, correct architectures, every
+kernel in the C API list (including transposed PQ), the ABI query, and both
+dispatcher symbols.
+The existing default requires both Linux architectures; `--host` verifies a
+development host-only artifact, and `--platforms` specifies an explicit subset.
+These subset checks do not satisfy the four-platform release gate. Use LLVM
+`llvm-nm` when verifying foreign object formats; some GNU `nm` builds only
+support ELF. Unreadable symbol tables fail verification.
+
+Verify runtime dependencies and provider/query behavior on each target OS and
+architecture in CI. A different host can inspect symbols/architecture but
+cannot establish that a foreign library loads or runs. Publishing, collecting
+the remaining macOS library, and the target runtime CI matrix remain release
+work; the local tests do not establish that this full package exists yet.

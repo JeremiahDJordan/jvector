@@ -131,6 +131,43 @@ public class TestSearchCodebookLayout {
         }
     }
 
+    @Test public void encodingCompressorDetachesWithoutChangingSearchOrBytes() throws Exception {
+        for (boolean centered : new boolean[] {false, true}) {
+            for (float threshold : new float[] {KMeansPlusPlusClusterer.UNWEIGHTED, 0.2f}) {
+                var original = compressor(23, 5, 256, centered, threshold);
+                var prepared = search(original);
+                boolean transposed = prepared.isTransposed();
+                var encoder = prepared.forEncoding();
+                assertFalse(encoder.isTransposed());
+                assertEquals(transposed, prepared.isTransposed());
+                assertSame(original, original.forEncoding());
+                assertSame(encoder, encoder.forEncoding());
+                if (transposed) assertNotSame(prepared, encoder);
+                else assertSame(prepared, encoder);
+                assertEquals(original, encoder);
+                assertArrayEquals(bytes(original, CURRENT), bytes(encoder, CURRENT));
+                for (int i = 0; i < 12; i++) assertEquals(original.encode(query(original, i)), encoder.encode(query(original, i)));
+                var values = new ListRandomAccessVectorValues(Arrays.asList(query(original,0), null, query(original,2)), 23);
+                assertEquals(original.encodeAll(values), encoder.encodeAll(values));
+                verify(original, prepared, 1);
+            }
+        }
+    }
+
+    @Test public void cosineMagnitudesPreserveProviderArithmeticBitForBit() throws Exception {
+        for (int width : new int[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 16}) {
+            var original = compressor(width * 7, 7, 256, false, KMeansPlusPlusClusterer.UNWEIGHTED);
+            var expected = TYPES.createFloatVector(7 * 256);
+            for (int m = 0; m < 7; m++)
+                VectorUtil.calculatePartialSelfMagnitudes(original.codebooks[m], m, width, 256, expected);
+            for (var pq : new ProductQuantization[] {original, search(original)}) {
+                var actual = pq.createPartialSquaredMagnitudes();
+                for (int i = 0; i < expected.length(); i++)
+                    assertEquals(Float.floatToIntBits(expected.get(i)), Float.floatToIntBits(actual.get(i)));
+            }
+        }
+    }
+
     @Test public void fallbackForUnmeasuredShapesAndEuclidean() throws Exception {
         for (int[] shape : new int[][] {{33, 33}, {264, 33}, {297, 33}, {528, 33}, {385, 48}})
             for (int clusters : new int[] {3, 17, 256}) {
