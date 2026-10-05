@@ -79,7 +79,8 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
     final float anisotropicThreshold; // parallel cost multiplier
     private final float[][] centroidNormsSquared; // precomputed norms of the centroids, for encoding
     private final ThreadLocal<VectorFloat<?>> partialSums; // for dot product, euclidean, and cosine partials
-    private final AtomicReference<VectorFloat<?>> partialSquaredMagnitudes; // for cosine partials
+    private final AtomicReference<VectorFloat<?>> partialSquaredMagnitudes; // standalone cosine partials
+    private final AtomicReference<VectorFloat<?>> fusedPartialSquaredMagnitudes; // fused cosine uses dot-product arithmetic
 
     /**
      * Initializes the codebooks by clustering the input data using Product Quantization.
@@ -251,6 +252,7 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
         this.anisotropicThreshold = anisotropicThreshold;
         this.partialSums = ThreadLocal.withInitial(() -> vectorTypeSupport.createFloatVector(getSubspaceCount() * getClusterCount()));
         this.partialSquaredMagnitudes = new AtomicReference<>(null);
+        this.fusedPartialSquaredMagnitudes = new AtomicReference<>(null);
 
 
         centroidNormsSquared = new float[M][clusterCount];
@@ -595,6 +597,10 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
         return partialSquaredMagnitudes;
     }
 
+    AtomicReference<VectorFloat<?>> fusedPartialSquaredMagnitudes() {
+        return fusedPartialSquaredMagnitudes;
+    }
+
     public void write(IndexWriter out, int version) throws IOException
     {
         if (version > OnDiskGraphIndex.CURRENT_VERSION) {
@@ -926,6 +932,19 @@ public class ProductQuantization implements VectorCompressor<ByteSequence<?>>, A
             // search layout needs only one temporary subspace, not a full copy.
             VectorUtil.calculatePartialSelfMagnitudes(centroidMajorCodebook(m), m,
                     subvectorWidths[m], clusterCount, result);
+        }
+        return result;
+    }
+
+    VectorFloat<?> createFusedPartialSquaredMagnitudes() {
+        // Fused cosine historically used dotProduct per centroid, while the
+        // standalone decoder used calculatePartialSelfMagnitudes. These can
+        // differ by an ulp under a native provider, so keep separate caches.
+        var result = vectorTypeSupport.createFloatVector(M * clusterCount);
+        for (int m = 0; m < M; m++) {
+            for (int c = 0; c < clusterCount; c++) {
+                result.set(m * clusterCount + c, centroidNormsSquared[m][c]);
+            }
         }
         return result;
     }

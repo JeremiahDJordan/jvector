@@ -168,6 +168,69 @@ public class TestSearchCodebookLayout {
         }
     }
 
+    @Test public void fusedCosineMagnitudesPreserveArithmeticAndCacheIsolation() throws Exception {
+        for (int width : new int[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 16}) {
+            for (boolean centered : new boolean[] {false, true}) {
+                var original = compressor(width * 7, 7, 256, centered, KMeansPlusPlusClusterer.UNWEIGHTED);
+                var expectedFused = TYPES.createFloatVector(7 * 256);
+                var expectedStandalone = TYPES.createFloatVector(7 * 256);
+                for (int m = 0; m < 7; m++) {
+                    VectorUtil.calculatePartialSelfMagnitudes(original.codebooks[m], m, width, 256, expectedStandalone);
+                    for (int c = 0; c < 256; c++) {
+                        expectedFused.set(m * 256 + c, VectorUtil.dotProduct(original.codebooks[m], c * width,
+                                original.codebooks[m], c * width, width));
+                    }
+                }
+                for (boolean transposed : new boolean[] {false, true}) {
+                    for (boolean fusedFirst : new boolean[] {false, true}) {
+                        // Reload for every order, so both caches start empty.
+                        var pq = transposed ? search(original) : ProductQuantization.load(
+                                new ByteBufferReader(ByteBuffer.wrap(bytes(original, CURRENT))));
+                        var cs = codes(pq);
+                        var q = query(pq, 1);
+                        var feature = new FusedPQ(cs.length, pq);
+                        var packed = feature.new PackedNeighbors(null) {
+                            @Override public void readInto(int node, ByteSequence<?> destination) {
+                                for (int i = 0; i < cs.length; i++) for (int m = 0; m < pq.M; m++)
+                                    destination.set(i * pq.M + m, cs[i].get(m));
+                            }
+                        };
+                        var hierarchy = new Int2ObjectHashMap<FusedFeature.InlineSource>();
+                        for (int i = 0; i < cs.length; i++) hierarchy.put(i, new FusedPQ.FusedPQInlineSource(cs[i]));
+                        if (!fusedFirst) new PQDecoder.CosineDecoder(pq.createCompressedVectors(cs), q);
+                        var decoder = FusedPQDecoder.newDecoder(packed, pq, hierarchy, q,
+                                TYPES.createByteSequence(cs.length * pq.M), TYPES.createFloatVector(cs.length),
+                                VectorSimilarityFunction.COSINE, node -> 0);
+                        if (fusedFirst) {
+                            assertNull(pq.partialSquaredMagnitudes().get());
+                            new PQDecoder.CosineDecoder(pq.createCompressedVectors(cs), q);
+                        }
+                        assertNotSame(pq.partialSquaredMagnitudes().get(), pq.fusedPartialSquaredMagnitudes().get());
+                        for (int i = 0; i < expectedFused.length(); i++) {
+                            assertEquals(Float.floatToIntBits(expectedFused.get(i)),
+                                    Float.floatToIntBits(pq.fusedPartialSquaredMagnitudes().get().get(i)));
+                            assertEquals(Float.floatToIntBits(expectedStandalone.get(i)),
+                                    Float.floatToIntBits(pq.partialSquaredMagnitudes().get().get(i)));
+                        }
+                        // Use the original fused arithmetic as the score oracle too.
+                        var centeredQuery = pq.globalCentroid == null ? q : VectorUtil.sub(q, pq.globalCentroid);
+                        float queryMagnitude = 0;
+                        for (int m = 0; m < pq.M; m++) {
+                            int offset = pq.subvectorSizesAndOffsets[m][1];
+                            queryMagnitude += VectorUtil.dotProduct(centeredQuery, offset, centeredQuery, offset, width);
+                        }
+                        decoder.enableSimilarityToNeighbors(0);
+                        for (int i = 0; i < cs.length; i++) {
+                            float expected = (1 + VectorUtil.pqDecodedCosineSimilarity(cs[i], 0, pq.M, 256,
+                                    pq.reusablePartialSums(), expectedFused, queryMagnitude)) / 2;
+                            assertEquals(Float.floatToIntBits(expected), Float.floatToIntBits(decoder.similarityTo(i)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     @Test public void fallbackForUnmeasuredShapesAndEuclidean() throws Exception {
         for (int[] shape : new int[][] {{33, 33}, {264, 33}, {297, 33}, {528, 33}, {385, 48}})
             for (int clusters : new int[] {3, 17, 256}) {

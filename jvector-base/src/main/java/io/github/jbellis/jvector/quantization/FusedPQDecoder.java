@@ -146,12 +146,12 @@ public abstract class FusedPQDecoder implements ScoreFunction.ApproximateScoreFu
             super(pq, hierarchyCachedFeatures, query, neighbors, neighborCodes, results, esf, VectorSimilarityFunction.COSINE);
 
             // this part is not query-dependent, so we can cache it
-            partialSquaredMagnitudes = pq.partialSquaredMagnitudes().updateAndGet(current -> {
+            partialSquaredMagnitudes = pq.fusedPartialSquaredMagnitudes().updateAndGet(current -> {
                 if (current != null) {
                     return current;
                 }
 
-                return pq.createPartialSquaredMagnitudes();
+                return pq.createFusedPartialSquaredMagnitudes();
             });
 
             // compute partialSums
